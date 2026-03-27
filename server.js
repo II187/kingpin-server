@@ -168,6 +168,20 @@ function startScanner() {
 
 // ─── HEALTH + STATUS HTTP SERVER ───────────────────────────────────────
 const server = http.createServer((req, res) => {
+  if (req.url === '/api/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({
+      connected: state.connected,
+      scanned: state.scanned,
+      signals: state.signals,
+      uptime: Math.round((Date.now() - state.startTime) / 1000),
+      topSignals: state.topSignals.slice(0, 10),
+      wallet: WALLET,
+      lastToken: state.lastToken
+    }));
+    return;
+  }
+
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', uptime: Math.round((Date.now() - state.startTime)/1000) }));
