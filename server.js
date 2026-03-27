@@ -170,6 +170,30 @@ function startScanner() {
 
 // ─── HEALTH + STATUS HTTP SERVER ───────────────────────────────────────
 const server = http.createServer((req, res) => {
+  // Image proxy — fetch from pollinations via Render (bypasses CH restrictions)
+  if (req.url.startsWith('/proxy/image?')) {
+    const urlParam = new URL('http://x' + req.url).searchParams.get('url');
+    if (!urlParam) { res.writeHead(400); res.end('Missing url param'); return; }
+    
+    function fetchImage(imageUrl, redirects = 0) {
+      if (redirects > 5) { res.writeHead(500); res.end('Too many redirects'); return; }
+      const lib = imageUrl.startsWith('https') ? require('https') : require('http');
+      lib.get(imageUrl, imgRes => {
+        if (imgRes.statusCode >= 300 && imgRes.statusCode < 400 && imgRes.headers.location) {
+          return fetchImage(imgRes.headers.location, redirects + 1);
+        }
+        res.writeHead(imgRes.statusCode, {
+          'Content-Type': imgRes.headers['content-type'] || 'image/jpeg',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache'
+        });
+        imgRes.pipe(res);
+      }).on('error', e => { res.writeHead(500); res.end(e.message); });
+    }
+    fetchImage(decodeURIComponent(urlParam));
+    return;
+  }
+
   // General Polymarket proxy — forwards to gamma or clob API
   if (req.url.startsWith('/proxy/polymarket/')) {
     const target = req.url.replace('/proxy/polymarket/', '');
