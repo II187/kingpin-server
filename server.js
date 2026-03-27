@@ -12,6 +12,7 @@
 const https = require('https');
 const http = require('http');
 const { WebSocket } = require('ws');
+const { scanMarkets, scoreMicroMarket } = require('./polymarket');
 const fs = require('fs');
 
 const PORT = process.env.PORT || 3000;
@@ -75,7 +76,8 @@ const SCORE_THRESHOLD = 78;
 const state = {
   scanned: 0, signals: 0, connected: false,
   lastToken: null, startTime: Date.now(),
-  topSignals: []
+  topSignals: [],
+  polymarket: { topOpps: [], lastScan: null }
 };
 
 function scoreToken(token) {
@@ -168,6 +170,24 @@ function startScanner() {
 
 // ─── HEALTH + STATUS HTTP SERVER ───────────────────────────────────────
 const server = http.createServer((req, res) => {
+  if (req.url === '/api/polymarket') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(state.polymarket));
+    return;
+  }
+
+  if (req.url === '/api/polymarket/scan') {
+    const opps = await scanMarkets();
+    state.polymarket = { topOpps: opps.slice(0, 10), lastScan: new Date().toISOString() };
+    if (opps.length > 0 && opps[0].score >= 50) {
+      const top = opps[0];
+      sendTelegram(`🎲 <b>Polymarket Opportunity</b>\n${top.market.question?.slice(0, 100)}\nScore: <b>${top.score}/100</b>\nSignals: ${top.signals.join(', ')}\nYES: ${(parseFloat(top.market.outcomePrices?.[0]||0)*100).toFixed(1)}%`);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(state.polymarket));
+    return;
+  }
+
   if (req.url === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify({
@@ -311,6 +331,16 @@ async function postStartupReport() {
 startScanner();
 // Post to Moltbook 5s after startup
 setTimeout(postStartupReport, 5000);
+// Scan Polymarket every 30 minutes
+setTimeout(async () => {
+  const opps = await scanMarkets();
+  state.polymarket = { topOpps: opps.slice(0, 10), lastScan: new Date().toISOString() };
+  console.log(`✅ Polymarket: ${opps.length} opportunities found`);
+}, 10000);
+setInterval(async () => {
+  const opps = await scanMarkets();
+  state.polymarket = { topOpps: opps.slice(0, 10), lastScan: new Date().toISOString() };
+}, 30 * 60 * 1000);
 
 // Wallet check every 5 minutes
 setInterval(checkWallet, 5 * 60 * 1000);
