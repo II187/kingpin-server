@@ -147,7 +147,7 @@ function startScanner() {
           + `MCap: ${(token.marketCapSol||0).toFixed(0)} SOL\n`
           + `Mint: <code>${token.mint}</code>\n`
           + (token.twitter ? `Twitter: ${token.twitter}\n` : '')
-          + `\n🎯 Target: 5x | SL: -35%`;
+          + `\n🎯 Target: 3x | SL: -35%`;
         
         sendTelegram(msg);
         console.log(`🚨 SIGNAL: ${token.name} | Score: ${score}`);
