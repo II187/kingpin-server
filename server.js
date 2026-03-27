@@ -1,0 +1,238 @@
+/**
+ * Kingpin 24/7 Server
+ * Runs on Render.com — always on, even when laptop is off
+ * 
+ * Services:
+ * - PumpFun Meme Trader (scanner + signals)
+ * - Telegram Bot (status updates to Lu)
+ * - Health endpoint (keeps Render alive)
+ * - Wallet monitor
+ */
+
+const https = require('https');
+const http = require('http');
+const { WebSocket } = require('ws');
+const fs = require('fs');
+
+const PORT = process.env.PORT || 3000;
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '8574117536:AAH-2-ZnSlcIPPsS6TxwZM_lyClknkGpbjc';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '616157339';
+const WALLET = process.env.WALLET || '3s4DjczzFbGwmD9UaLf4xKSCiFBk97noLdNcbUSxs5Uq';
+
+// ─── TELEGRAM ALERTS ───────────────────────────────────────────────────
+function sendTelegram(msg) {
+  if (!TELEGRAM_TOKEN) { console.log('[TG]', msg); return; }
+  
+  const body = JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: msg, parse_mode: 'HTML' });
+  const opts = {
+    hostname: 'api.telegram.org',
+    path: `/bot${TELEGRAM_TOKEN}/sendMessage`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  };
+  const req = https.request(opts, res => {});
+  req.on('error', () => {});
+  req.write(body);
+  req.end();
+}
+
+// ─── WALLET MONITOR ────────────────────────────────────────────────────
+let lastBalance = 0;
+
+async function checkWallet() {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ jsonrpc:'2.0', id:1, method:'getBalance', params:[WALLET] });
+    const opts = {
+      hostname: 'api.mainnet-beta.solana.com',
+      path: '/', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    };
+    const req = https.request(opts, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const sol = JSON.parse(d).result.value / 1e9;
+          if (lastBalance > 0 && Math.abs(sol - lastBalance) > 0.01) {
+            const diff = sol - lastBalance;
+            const emoji = diff > 0 ? '📈' : '📉';
+            sendTelegram(`${emoji} <b>Wallet Update</b>\n${diff > 0 ? '+' : ''}${diff.toFixed(4)} SOL\nBalance: <b>${sol.toFixed(4)} SOL</b>`);
+          }
+          lastBalance = sol;
+          resolve(sol);
+        } catch { resolve(0); }
+      });
+    });
+    req.on('error', () => resolve(0));
+    req.setTimeout(10000, () => { req.destroy(); resolve(0); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// ─── PUMPFUN SCANNER ───────────────────────────────────────────────────
+const SCORE_THRESHOLD = 78;
+const state = {
+  scanned: 0, signals: 0, connected: false,
+  lastToken: null, startTime: Date.now(),
+  topSignals: []
+};
+
+function scoreToken(token) {
+  let score = 40;
+  const signals = [];
+  const text = `${token.name||''} ${token.symbol||''}`.toLowerCase();
+
+  if (token.twitter && token.telegram) { score += 20; signals.push('Twitter+TG'); }
+  else if (token.twitter || token.telegram) { score += 10; signals.push('Social'); }
+  if (token.website) { score += 5; signals.push('Website'); }
+
+  const kw = ['pepe','doge','cat','dog','frog','ape','wojak','chad','ai','trump','elon','grok','moon','based'];
+  const hit = kw.find(k => text.includes(k));
+  if (hit) { score += 12; signals.push(`KW:${hit}`); }
+
+  const mcap = token.marketCapSol || 0;
+  if (mcap >= 5 && mcap <= 150) { score += 15; signals.push('EarlyStage'); }
+  else if (mcap > 150 && mcap <= 400) { score += 5; }
+  else if (mcap > 400) { score -= 15; }
+
+  if (token.solAmount >= 2) { score += 10; signals.push(`Dev:${token.solAmount.toFixed(1)}SOL`); }
+  else if (token.solAmount >= 0.5) { score += 5; }
+
+  if (token.replyCount > 5) { score += 5; signals.push('Replies'); }
+  if (token.bundled) { score -= 30; }
+  if (text.includes('test') || text.includes('rug') || text.includes('scam')) { score -= 50; }
+
+  return { score: Math.max(0, Math.min(100, score)), signals };
+}
+
+function startScanner() {
+  const ws = new WebSocket('wss://pumpportal.fun/api/data');
+  
+  ws.on('open', () => {
+    state.connected = true;
+    console.log('✅ PumpFun connected');
+    ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
+    sendTelegram('🟢 <b>Kingpin Server Online</b>\nPumpFun scanner aktiv.\nWallet: ' + WALLET.slice(0,8) + '...');
+  });
+
+  ws.on('message', (data) => {
+    try {
+      const token = JSON.parse(data.toString());
+      if (!token.mint && !token.name) return;
+      
+      state.scanned++;
+      state.lastToken = token.name;
+
+      // Basic filters
+      if (!token.twitter && !token.telegram && !token.website) return;
+      if (token.bundled) return;
+      if ((token.marketCapSol || 0) > 500) return;
+
+      const { score, signals } = scoreToken(token);
+      
+      if (score >= SCORE_THRESHOLD) {
+        state.signals++;
+        state.topSignals.unshift({ 
+          name: token.name, symbol: token.symbol, score, signals,
+          mcap: token.marketCapSol, mint: token.mint, time: new Date().toLocaleTimeString('de-CH')
+        });
+        state.topSignals = state.topSignals.slice(0, 20);
+
+        const msg = `🚨 <b>HIGH SIGNAL: ${token.name} (${token.symbol})</b>\n`
+          + `Score: <b>${score}/100</b>\n`
+          + `Signals: ${signals.join(', ')}\n`
+          + `MCap: ${(token.marketCapSol||0).toFixed(0)} SOL\n`
+          + `Mint: <code>${token.mint}</code>\n`
+          + (token.twitter ? `Twitter: ${token.twitter}\n` : '')
+          + `\n🎯 Target: 5x | SL: -35%`;
+        
+        sendTelegram(msg);
+        console.log(`🚨 SIGNAL: ${token.name} | Score: ${score}`);
+      }
+    } catch {}
+  });
+
+  ws.on('error', (e) => {
+    state.connected = false;
+    console.error('WS Error:', e.message);
+    setTimeout(startScanner, 10000);
+  });
+
+  ws.on('close', () => {
+    state.connected = false;
+    console.log('WS closed — reconnecting in 10s');
+    setTimeout(startScanner, 10000);
+  });
+}
+
+// ─── HEALTH + STATUS HTTP SERVER ───────────────────────────────────────
+const server = http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', uptime: Math.round((Date.now() - state.startTime)/1000) }));
+    return;
+  }
+
+  if (req.url === '/status' || req.url === '/') {
+    const uptimeSec = Math.round((Date.now() - state.startTime) / 1000);
+    const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Kingpin Status</title>
+<meta http-equiv="refresh" content="30">
+<style>
+body{background:#0a0a0a;color:#eee;font-family:monospace;padding:30px;max-width:700px;margin:0 auto}
+h1{color:#ff4444;letter-spacing:4px}
+.box{background:#111;border:1px solid #222;border-radius:8px;padding:16px;margin:12px 0}
+.green{color:#00ff88}.red{color:#ff4444}.yellow{color:#ffaa00}
+table{width:100%;border-collapse:collapse}td{padding:6px 10px;border-bottom:1px solid #1a1a1a}
+</style></head>
+<body>
+<h1>🎯 KINGPIN</h1>
+<div class="box">
+  <div>Scanner: <span class="${state.connected?'green':'red'}">${state.connected?'●  LIVE':'●  OFFLINE'}</span></div>
+  <div>Uptime: ${Math.floor(uptimeSec/3600)}h ${Math.floor((uptimeSec%3600)/60)}m</div>
+  <div>Scanned: ${state.scanned} tokens</div>
+  <div>Signals: <span class="yellow">${state.signals}</span></div>
+  <div>Wallet: ${WALLET.slice(0,8)}...</div>
+</div>
+${state.topSignals.length > 0 ? `
+<div class="box">
+<b>🚨 Recent Signals</b>
+<table>
+${state.topSignals.slice(0,10).map(s => `<tr><td>${s.time}</td><td class="yellow">${s.name}</td><td>${s.score}/100</td><td>${(s.mcap||0).toFixed(0)} SOL</td></tr>`).join('')}
+</table>
+</div>` : ''}
+<p style="color:#333;font-size:11px">Auto-refresh: 30s | Goal: 1000 SOL</p>
+</body></html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(html);
+    return;
+  }
+
+  res.writeHead(404);
+  res.end('Not found');
+});
+
+server.listen(PORT, () => {
+  console.log(`\n🎯 Kingpin Server running on port ${PORT}`);
+  console.log(`📊 Status: http://localhost:${PORT}`);
+});
+
+// ─── INIT ──────────────────────────────────────────────────────────────
+startScanner();
+
+// Wallet check every 5 minutes
+setInterval(checkWallet, 5 * 60 * 1000);
+checkWallet();
+
+// Daily heartbeat to Telegram
+setInterval(() => {
+  const uptime = Math.round((Date.now() - state.startTime) / 1000 / 3600);
+  sendTelegram(`💓 <b>Kingpin Heartbeat</b>\nUptime: ${uptime}h\nScanned: ${state.scanned} tokens\nSignals: ${state.signals}\nWallet: ${lastBalance.toFixed(4)} SOL`);
+}, 24 * 60 * 60 * 1000);
+
+process.on('uncaughtException', (e) => {
+  console.error('Uncaught:', e.message);
+  sendTelegram(`❌ <b>Server Error</b>\n${e.message}`);
+});

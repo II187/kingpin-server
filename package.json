@@ -1,0 +1,15 @@
+{
+  "name": "kingpin-server",
+  "version": "1.0.0",
+  "description": "Kingpin 24/7 Trading Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

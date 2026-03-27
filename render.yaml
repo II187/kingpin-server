@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: kingpin-server
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        value: "616157339"
+      - key: WALLET
+        value: "3s4DjczzFbGwmD9UaLf4xKSCiFBk97noLdNcbUSxs5Uq"
