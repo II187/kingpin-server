@@ -170,6 +170,28 @@ function startScanner() {
 
 // ─── HEALTH + STATUS HTTP SERVER ───────────────────────────────────────
 const server = http.createServer((req, res) => {
+  // General Polymarket proxy — forwards to gamma or clob API
+  if (req.url.startsWith('/proxy/polymarket/')) {
+    const target = req.url.replace('/proxy/polymarket/', '');
+    const [host, ...pathParts] = target.split('/');
+    const proxyPath = '/' + pathParts.join('/');
+    const hostname = host === 'clob' ? 'clob.polymarket.com' : 'gamma-api.polymarket.com';
+    
+    const proxyOpts = { hostname, path: proxyPath || '/', method: 'GET', headers: { 'User-Agent': 'KingpinBot/1.0' } };
+    const proxyReq = https.request(proxyOpts, proxyRes => {
+      let d = '';
+      proxyRes.on('data', c => d += c);
+      proxyRes.on('end', () => {
+        res.writeHead(proxyRes.statusCode, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(d);
+      });
+    });
+    proxyReq.on('error', e => { res.writeHead(500); res.end(JSON.stringify({ error: e.message })); });
+    proxyReq.setTimeout(10000, () => { proxyReq.destroy(); res.writeHead(504); res.end('{}'); });
+    proxyReq.end();
+    return;
+  }
+
   if (req.url === '/api/polymarket') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(state.polymarket));
