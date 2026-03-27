@@ -13,6 +13,7 @@ const https = require('https');
 const http = require('http');
 const { WebSocket } = require('ws');
 const { scanMarkets, scoreMicroMarket } = require('./polymarket');
+const { analyzeUser } = require('./analyze_wallet');
 const fs = require('fs');
 
 const PORT = process.env.PORT || 3000;
@@ -191,6 +192,24 @@ const server = http.createServer((req, res) => {
       }).on('error', e => { res.writeHead(500); res.end(e.message); });
     }
     fetchImage(decodeURIComponent(urlParam));
+    return;
+  }
+
+  // Analyze a Polymarket wallet
+  if (req.url.startsWith('/api/analyze/')) {
+    const username = req.url.split('/api/analyze/')[1];
+    if (!username) { res.writeHead(400); res.end('Missing username'); return; }
+    res.writeHead(200, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    const origLog = console.log;
+    const lines = [];
+    console.log = (...args) => { lines.push(args.join(' ')); };
+    analyzeUser(username).then(user => {
+      console.log = origLog;
+      res.end(lines.join('\n'));
+    }).catch(e => {
+      console.log = origLog;
+      res.end('Error: ' + e.message);
+    });
     return;
   }
 
