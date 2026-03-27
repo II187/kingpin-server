@@ -104,8 +104,8 @@ async function scanMarkets() {
   
   const markets = await getTopMarkets(50);
   
-  if (!Array.isArray(markets)) {
-    console.log('⚠️  Could not fetch markets:', JSON.stringify(markets).slice(0, 200));
+  if (!markets || !Array.isArray(markets)) {
+    console.log('⚠️  Polymarket blocked or unavailable:', JSON.stringify(markets || {}).slice(0, 200));
     return [];
   }
 
