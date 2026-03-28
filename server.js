@@ -337,6 +337,21 @@ ${state.topSignals.slice(0,10).map(s => `<tr><td>${s.time}</td><td class="yellow
     return;
   }
 
+
+  // Polymarket profile scraper (uses Playwright, US IP bypasses geo-block)
+  if (req.url.startsWith('/api/scrape/polymarket/')) {
+    const username = req.url.split('/api/scrape/polymarket/')[1];
+    if (!username) { res.writeHead(400); res.end('Missing username'); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    try {
+      const { scrapePolymarketProfile } = require('./scrape_polymarket');
+      const data = await scrapePolymarketProfile(username);
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
   res.writeHead(404);
   res.end('Not found');
 });
